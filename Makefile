@@ -1,2 +1,2 @@
 compiling:
-  -g -pthread -o
+  -g -pthread -o problem2.cpp
