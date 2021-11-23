@@ -117,7 +117,7 @@ size_t buildAutomate(std::vector<nodeAutomata>& automate, std::string pattern){
         while(node_index && (node_index + 1 == automate.size() || automate[node_index + 1].c != e)){
             node_index = automate[node_index].pref;
         }
-        if(automate[node_index + 1].c == e){
+        if((node_index + 1 < automate.size()) && automate[node_index + 1].c == e){
             node_index++;
         }
         automate.push_back({e, node_index});
