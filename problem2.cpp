@@ -153,12 +153,12 @@ struct searchInFile_ret{
     std::string path;
     std::vector<searchInFile_ret_pair> str;
 };
-void composeAns(std::vector<find_pattern_ret>& answers, std::vector<searchInFile_ret>& ret, const size_t printable){
+void composeAns(const std::vector<find_pattern_ret>& answers, std::vector<searchInFile_ret>& ret, const size_t printable, size_t& printed){
     std::string path = "";
     size_t strcnt = 0;
     bool getans = true;
     bool npushed = true;
-    for(size_t j = 0; j < printable; j++){
+    for(size_t j = printed; j < printable; j++){
         if(path != answers[j].path){
             path = answers[j].path;
             getans = true;
@@ -180,7 +180,7 @@ void composeAns(std::vector<find_pattern_ret>& answers, std::vector<searchInFile
                     return;
                 }
                 std::string ret_str = "";
-                size_t buf_size = 4096;
+                size_t buf_size = 2<<20;
                 char* buf = (char*)malloc(buf_size * sizeof(char));
                 ssize_t rdbites = 1;
                 size_t p = answers[j].ret[i].str_offset;
@@ -229,11 +229,12 @@ void composeAns(std::vector<find_pattern_ret>& answers, std::vector<searchInFile
         }
          e.str = newstr;
     }
+    printed = printable;
 }
 
-void printret(std::vector<find_pattern_ret>& find_pattern_ret, const size_t printable){
+void printret(std::vector<find_pattern_ret>& find_pattern_ret, const size_t printable, size_t& printed){
     std::vector<searchInFile_ret> ret;
-    composeAns(find_pattern_ret, ret, printable);
+    composeAns(find_pattern_ret, ret, printable, printed);
     for(size_t i = 0; i < ret.size();i++){
         printf("Search pattern has been found in file: %s\n", ret[i].path.c_str());
         for(int j = 0; j < ret[i].str.size(); j++){
@@ -312,7 +313,8 @@ void find_pattern(int fd, size_t offset, size_t blocksize, const SearchParam& co
     ret[ret_i].getans = getans;
     return;
 }
-void searchInFile(std::string path, const SearchParam& comparam, size_t& threadsUsed, std::vector<std::thread>& curThreads, const std::vector<nodeAutomata>& automate, std::vector<find_pattern_ret>& ret,std::vector<int>& fd){
+void searchInFile(std::string path, const SearchParam& comparam, size_t& threadsUsed, std::vector<std::thread>& curThreads, const std::vector<nodeAutomata>& automate, std::vector<find_pattern_ret>& ret,std::vector<int>& fd, size_t& printed, std::thread& printret_thread){
+    
     fd.push_back(open(path.c_str(), O_RDONLY));
     if(fd[fd.size()-1] == -1){
         write(2, "Ошибка открытия файла ", 42);
@@ -321,7 +323,7 @@ void searchInFile(std::string path, const SearchParam& comparam, size_t& threads
         return;
     }
     size_t file_size = _getFileSize(fd[fd.size()-1]);
-    size_t maxthread = file_size / comparam.searchPattern.size() - 1;
+    /*size_t maxthread = file_size / comparam.searchPattern.size() - 1;
     
     if(file_size % comparam.searchPattern.size()){
         maxthread++;
@@ -336,7 +338,10 @@ void searchInFile(std::string path, const SearchParam& comparam, size_t& threads
         if(file_size % maxthread){
             blocksize++;
         }
-    }
+    }*/
+    size_t maxthread = comparam.threadsCount;
+    size_t blocksize = std::max(file_size / maxthread, 10 * comparam.searchPattern.size());
+    maxthread = std::min(maxthread, file_size/blocksize);
     size_t printable = ret.size();
     for(size_t i = 0; i < maxthread; i++){
         threadsUsed++;
@@ -358,7 +363,12 @@ void searchInFile(std::string path, const SearchParam& comparam, size_t& threads
             for(size_t j = 0; j < fd.size() - 1; j++){
                 close(fd[j]);
             }
-            //printret(ret, printable);
+            if(printret_thread.joinable()){
+                printret_thread.join();
+            }
+            
+            printret_thread = std::thread(printret, std::ref(ret), printable, std::ref(printed));
+            //printret(ret, printable, printed);
             if(i == maxthread - 1){
                 close(fd[fd.size() - 1]);
             }else{
@@ -375,21 +385,25 @@ void searchInFile(std::string path, const SearchParam& comparam, size_t& threads
     
 }
 
-void searchInDir(std::string path, DIR* dir, const SearchParam& comparam, size_t& threadsUsed,std::vector<std::thread>& curThreads,const std::vector<nodeAutomata>& automate, std::vector<find_pattern_ret>& ret,std::vector<int>& fd){
+void searchInDir(std::string path, DIR* dir, const SearchParam& comparam, size_t& threadsUsed,std::vector<std::thread>& curThreads,const std::vector<nodeAutomata>& automate, std::vector<find_pattern_ret>& ret, std::vector<int>& fd, size_t &printed, std::thread& printret_thread){
     for (dirent *cdir = readdir(dir); cdir != nullptr; cdir = readdir(dir)){
         std::string nextname(path+ "/" + cdir->d_name);
         if (cdir->d_type == DT_REG){
-            searchInFile(path+"/"+cdir->d_name, comparam, threadsUsed, curThreads, automate, ret, fd);
+            searchInFile(nextname, comparam, threadsUsed, curThreads, automate, ret, fd, printed, printret_thread);
         }
         
     }
+    rewinddir(dir);
     if(!comparam.onlyCurrentDir){
         for (dirent *cdir = readdir(dir); cdir != nullptr; cdir = readdir(dir)){
             std::string nextname(path+ "/" + cdir->d_name);
-            DIR* nextdir = opendir(path.c_str());
-            if (cdir->d_type == DT_DIR){
-                searchInDir(path.c_str(), nextdir, comparam, threadsUsed, curThreads, automate, ret, fd);
+           
+            if (cdir->d_type == DT_DIR && !(strcmp(cdir->d_name,".") == 0 || strcmp(cdir->d_name,"..") == 0)){
+                DIR* nextdir = opendir(nextname.c_str());
+                searchInDir(nextname, nextdir, comparam, threadsUsed, curThreads, automate, ret, fd, printed, printret_thread);
+                closedir(nextdir);
             }
+            
         }
     }
 }
@@ -397,6 +411,7 @@ void searchInDir(std::string path, DIR* dir, const SearchParam& comparam, size_t
 
 int main(int argc, char* argv[]) {
     SearchParam comparam;
+    size_t printed = 0;
     if(parce(argc, argv, comparam)){
         return 1;
     }
@@ -414,19 +429,19 @@ int main(int argc, char* argv[]) {
     buildAutomate(automate, comparam.searchPattern);
     std::vector<find_pattern_ret> ret;
     std::vector<int> fd;
-    
+    std::thread printret_thread;
     if(dir == nullptr){
         write(2, "Невозможно получить доступ к папке ", 66);
         write(2, comparam.path.c_str(), comparam.path.size());
         write(2, "\n", 2);
         return 1;
     }
-    searchInDir(path, dir, comparam, threadsUsed,curThreads, automate, ret, fd);
+    searchInDir(path, dir, comparam, threadsUsed,curThreads, automate, ret, fd, printed, printret_thread);
     for(auto& e: curThreads){
         e.join();
     }
-    
-    printret(ret, ret.size());
+    printret_thread.join();
+    printret(ret, ret.size(), printed);
     for(auto& e:fd){
         close(e);
     }
